@@ -83,6 +83,12 @@ case command
         else break
       end
     end
+
+    puts "Restart hiveserver2"
+    puts Command.call %W(
+      --jobflow #{job_id}
+      --ssh 'sudo /etc/init.d/hive-serverd restart'
+    )
   when "master"
     job_id = ARGV.shift
     info = EMR.info(job_id)
