@@ -1,0 +1,102 @@
+#!/usr/bin/ruby
+
+require 'open3'
+require 'json'
+
+class Command
+  @log_uri = "s3://analysistest/test-ojimah-EMR-log/elastic-mapreduce-cli_test/"
+  @script = "/home/ec2-user/elastic-mapreduce-cli/elastic-mapreduce"
+
+  def self.call(args)
+    o, s = Open3.capture2(@script, "--log-uri", @log_uri, *args)
+    if s.success?
+      block_given? ? yield(o) : o
+    end
+  end
+end
+
+module EMR
+  class <<self
+    def create
+      name = "Cli Test"
+      hive_site = "s3://analysistest/hikaru.ojima/hive-site.xml"
+    
+      Command.call %W(
+        --create
+        --name                 "#{name}"
+        --alive
+        --num-instances        2
+        --slave-instance-type  m1.medium
+        --master-instance-type m1.medium
+        --ami-version          3.3.0
+        --key-pair             analysis-test
+        --subnet               subnet-afbe41d8
+        --hive-site            #{hive_site}
+        --hive-interactive
+      )  do |o|
+        o =~ /Created job flow (j-\w+)/
+        $1
+      end
+    end
+    
+    def info(jobflow_id)
+      Command.call %W(
+        --describe
+        --jobflow #{jobflow_id}
+      ) do |o|
+        Info.new(o)
+      end
+    end
+  end
+end
+  
+class Info
+  def initialize(info_json)
+    @info = JSON.parse(info_json)
+    @job_flow_info = @info["JobFlows"][0]
+  end
+  def master_instance
+    i = @job_flow_info["Instances"]
+    [ i["MasterInstanceId"], i["MasterPublicDnsName"] ]
+  end
+  def status
+    @job_flow_info["ExecutionStatusDetail"]["State"]
+  end
+end
+
+command = ARGV.shift
+case command
+  when "create"
+    job_id = EMR.create
+    
+    puts job_id
+    
+    loop do
+      sleep 30
+    
+      info = EMR.info(job_id)
+      puts info.status
+    
+      case info.status
+        when "RUNNING" then next
+        when "STARTING" then next
+        else break
+      end
+    end
+  when "master"
+    job_id = ARGV.shift
+    info = EMR.info(job_id)
+    puts info.master_instance.join("\t")
+  when "status"
+    job_id = ARGV.shift
+    info = EMR.info(job_id)
+    puts info.status
+  when "list"
+    puts Command.call(%w(--list --active))
+  when "terminate"
+    jobflow_id = ARGV.shift
+    puts Command.call %W(
+      --terminate
+      --jobflow #{jobflow_id}
+    )
+end
