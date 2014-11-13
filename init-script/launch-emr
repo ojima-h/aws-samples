@@ -19,7 +19,8 @@ module EMR
   class <<self
     def create
       name = "Cli Test"
-      hive_site = "s3://analysistest/hikaru.ojima/hive-site.xml"
+      hive_site = "s3://analysistest/hikaru.ojima/init-script/hive-site.xml"
+      bootstrap_action = "s3://analysistest/hikaru.ojima/init-script/bootstrap-action.sh"
     
       Command.call %W(
         --create
@@ -33,6 +34,7 @@ module EMR
         --subnet               subnet-afbe41d8
         --hive-site            #{hive_site}
         --hive-interactive
+        --bootstrap-action     #{bootstrap_action}
       )  do |o|
         o =~ /Created job flow (j-\w+)/
         $1
@@ -47,6 +49,29 @@ module EMR
         Info.new(o)
       end
     end
+
+    def wait_launch(jobflow_id)
+      loop do
+        sleep 30
+      
+        info = EMR.info(jobflow_id)
+        puts info.status
+      
+        case info.status
+          when "STARTING" then next
+          when "BOOTSTRAPPING" then next
+          when "RUNNING" then next
+          else break info.status
+        end
+      end
+    end
+
+    def ssh(command = nil)
+      Command.call %W(
+        --jobflow #{job_id}
+        --ssh #{command}
+      )
+    end
   end
 end
   
@@ -55,54 +80,15 @@ class Info
     @info = JSON.parse(info_json)
     @job_flow_info = @info["JobFlows"][0]
   end
-  def master_instance
-    i = @job_flow_info["Instances"]
-    [ i["MasterInstanceId"], i["MasterPublicDnsName"] ]
-  end
   def status
     @job_flow_info["ExecutionStatusDetail"]["State"]
   end
 end
 
-command = ARGV.shift
-case command
-  when "create"
-    job_id = EMR.create
-    
-    puts job_id
-    
-    loop do
-      sleep 30
-    
-      info = EMR.info(job_id)
-      puts info.status
-    
-      case info.status
-        when "RUNNING" then next
-        when "STARTING" then next
-        else break
-      end
-    end
-
-    puts "Restart hiveserver2"
-    puts Command.call %W(
-      --jobflow #{job_id}
-      --ssh 'sudo /etc/init.d/hive-serverd restart'
-    )
-  when "master"
-    job_id = ARGV.shift
-    info = EMR.info(job_id)
-    puts info.master_instance.join("\t")
-  when "status"
-    job_id = ARGV.shift
-    info = EMR.info(job_id)
-    puts info.status
-  when "list"
-    puts Command.call(%w(--list --active))
-  when "terminate"
-    jobflow_id = ARGV.shift
-    puts Command.call %W(
-      --terminate
-      --jobflow #{jobflow_id}
-    )
+job_id = EMR.create
+puts job_id
+if EMR.wait_launch(job_id) == "WAITING"
+  puts "ok"
+else
+  puts "ng"
 end
