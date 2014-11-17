@@ -1,0 +1,117 @@
+#!/usr/bin/ruby
+
+require 'open3'
+require 'json'
+
+class Command
+  @log_uri = "s3://analysistest/test-ojimah-EMR-log/elastic-mapreduce-cli_test/"
+  @script = "/home/ec2-user/elastic-mapreduce-cli/elastic-mapreduce"
+
+  def self.call(*args)
+    o, s = Open3.capture2(@script, "--log-uri", @log_uri, *args)
+    if s.success?
+      block_given? ? yield(o) : o
+    end
+  end
+end
+
+module EMR
+  class <<self
+    def create
+      name = "Cli Test"
+      hive_site = "s3://analysistest/hikaru.ojima/init-script/hive-site.xml"
+      hive_script = "s3://analysistest/hikaru.ojima/init-script/init-query.sql"
+      #bootstrap_action = "s3://analysistest/hikaru.ojima/init-script/bootstrap-action.sh"
+    
+      Command.call(
+        "--create"                                 ,
+        "--name"                , name             ,
+        "--alive"                                  ,
+        "--num-instances"       , "2"              ,
+        "--slave-instance-type" , "m1.medium"      ,
+        "--master-instance-type", "m1.medium"      ,
+        "--ami-version"         , "3.3.0"          ,
+        "--key-pair"            , "analysis-test"  ,
+        "--subnet"              , "subnet-afbe41d8",
+        "--hive-site"           , hive_site        ,
+        "--hive-interactive"                       ,
+        "--hive-script"         , hive_script      ,
+        #"--bootstrap-action"    , bootstrap_action ,
+      ) do |o|
+        o =~ /Created job flow (j-\w+)/
+        $1
+      end
+    end
+    
+    def info(jobflow_id)
+      Command.call(
+        "--describe",
+        "--jobflow" , jobflow_id
+      ) do |o|
+        Info.new(o)
+      end
+    end
+
+    def wait_launch(jobflow_id)
+      loop do
+        sleep 30
+      
+        info = EMR.info(jobflow_id)
+        puts info.status
+      
+        case info.status
+          when "STARTING"      then next
+          when "BOOTSTRAPPING" then next
+          when "RUNNING"       then next
+          else break info.status
+        end
+      end
+    end
+
+    def ssh(jobflow_id, command = nil)
+      Command.call(
+        "--jobflow", jobflow_id ,
+        "--ssh"    , command,
+      )
+    end
+
+    def put(jobflow_id, src, dst)
+      Command.call(
+        "--jobflow", jobflow_id ,
+        "--put"    , src,
+        "--to"     , dst,
+      )
+    end
+  end
+end
+  
+class Info
+  def initialize(info_json)
+    @info = JSON.parse(info_json)
+    @job_flow_info = @info["JobFlows"][0]
+  end
+  def status
+    @job_flow_info["ExecutionStatusDetail"]["State"]
+  end
+end
+
+def main
+  hive_env_sh = File.expand_path("../hive-env.sh", __FILE__)
+
+  jobflow_id = EMR.create
+  puts jobflow_id
+
+  if EMR.wait_launch(jobflow_id) == "WAITING"
+    puts "ok"
+  
+    puts
+    puts "initializing..."
+    EMR.put(jobflow_id, hive_env_sh, "/home/hadoop/hive/conf/hive-env.sh")
+    EMR.ssh(jobflow_id, "sudo /etc/init.d/hive-serverd restart")
+    puts "done"
+  else
+    puts "ng"
+  end
+end
+
+main
